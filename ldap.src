@@ -1,0 +1,98 @@
+# Generate a private key for the CA
+openssl genpkey -algorithm RSA -out ca.key
+
+# Generate a self-signed CA certificate
+openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt -subj "/C=US/ST=California/L=San Francisco/O=nova/OU=IT Department/CN=<yourdomain.com>"
+
+# Generate a private key for the LDAP server
+openssl genpkey -algorithm RSA -out ldap.key
+
+# Generate a CSR for the LDAP server
+openssl req -new -key ldap.key -out ldap.csr -subj "/C=US/ST=California/L=San Francisco/O=Example Company/OU=IT Department/CN=<yourdomain.com>"
+
+# Sign the CSR with the CA certificate to create the LDAP server certificate
+openssl x509 -req -in ldap.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out ldap.crt -days 3650 -sha256 
+
+# Convert the CA certificate to PEM format if it isn't already.
+openssl x509 -in ca.crt -outform PEM -out ca.pem
+
+
+# Copy certificate,CA and Key to /etc/ldap/sasl2 directory
+# Change Ownership of the certificate to openldap user
+chown -R openldap:openldap /etc/ldap/sasl2
+vim ssl-ldap.ldif
+
+# Config ssl on openldap server
+"""
+dn: cn=config
+changetype: modify
+add: olcTLSCACertificateFile
+olcTLSCACertificateFile: /etc/ldap/sasl2/ca.crt
+-
+replace: olcTLSCertificateFile
+olcTLSCertificateFile: /etc/ldap/sasl2/ldap.crt
+-
+replace: olcTLSCertificateKeyFile
+olcTLSCertificateKeyFile: /etc/ldap/sasl2/ldap.key
+"""
+
+ldapmodify -Y EXTERNAL -H ldapi:/// -f mod-ssl.ldif
+
+
+# Enable the SSL module and restart Apache
+a2enmod ssl
+systemctl restart apache2
+
+# Configure Apache for SSL
+# Generate certificate for lan apachi2 panel
+openssl req -new -x509 -days 3650 -nodes -out /etc/ssl/certs/apache-selfsigned.crt -keyout /etc/ssl/private/apache-selfsigned.key  -subj "/C=US/ST=California/L=San Francisco/O=nova/OU=IT Department/CN=<yourdomain.com>"
+
+# create /etc/apache2/sites-available/lam-ssl.conf and add the following configuration
+"""
+<VirtualHost *:443>
+    ServerAdmin webmaster@localhost
+    ServerName  <yourdomain.com> 
+    DocumentRoot /var/www/html/lam
+
+    SSLEngine on
+    SSLCertificateFile /etc/ssl/certs/apache-selfsigned.crt
+    SSLCertificateKeyFile /etc/ssl/private/apache-selfsigned.key
+
+    # Redirect root URL to /lam
+    RedirectMatch ^/$ /lam
+
+    <Directory /var/www/html/lam>
+        Options Indexes FollowSymLinks MultiViews
+        AllowOverride All
+        Order allow,deny
+        allow from all
+    </Directory>
+
+    ErrorLog ${APACHE_LOG_DIR}/lam_error.log
+    CustomLog ${APACHE_LOG_DIR}/lam_access.log combined
+</VirtualHost>
+"""
+
+# Enable the New Virtual Host and Restart Apache
+a2ensite lam-ssl.conf
+systemctl restart apache2
+
+# Create or Edit the HTTP Virtual Host Configuration
+vim /etc/apache2/sites-available/000-default.conf
+
+#Add the following lines to set up a redirect
+<VirtualHost *:80>
+    ServerAdmin admin@example.com
+    ServerName yourdomain.com
+    DocumentRoot /var/www/html
+
+    # Redirect all traffic to HTTPS
+    Redirect permanent / https://yourdomain.com/lam
+
+    ErrorLog ${APACHE_LOG_DIR}/error.log
+    CustomLog ${APACHE_LOG_DIR}/access.log combined
+</VirtualHost>
+
+# Enable the New Virtual Host and Restart Apache
+a2ensite 000-default.conf
+systemctl restart apache2
